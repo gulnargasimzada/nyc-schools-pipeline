@@ -2,6 +2,7 @@
 Configuration shared by all agents.
 """
 import os
+from pathlib import Path
 
 # Connection to the schools database (set in docker-compose.yaml)
 DB_URL = os.environ["SCHOOLS_DB_URL"]
@@ -69,3 +70,6 @@ PATIENCE = 6              # Stop after this many experiments without a real impr
 MIN_IMPROVEMENT = 0.005   # A new best must beat the old one by at least this CV accuracy
 OVERFIT_LIMIT = 0.05      # Training accuracy minus CV accuracy above this counts as overfitting
 RECURSION_LIMIT = 100     # LangGraph safety limit on the number of agent steps
+
+# Folder for the final report (inside agents/, so it is visible on the host)
+RESULTS_DIR = Path(__file__).parent / "results"

@@ -5,6 +5,7 @@ from langgraph.graph import END, START, StateGraph
 
 from nodes import (data_agent, evaluator_agent, feature_agent, planner_agent,
                    route_after_planner, trainer_agent)
+from reporter import reporter_agent
 from state import AgentState
 
 
@@ -18,6 +19,7 @@ def build_graph():
     builder.add_node("feature_agent", feature_agent)
     builder.add_node("trainer_agent", trainer_agent)
     builder.add_node("evaluator_agent", evaluator_agent)
+    builder.add_node("reporter_agent", reporter_agent)
 
     # Data preparation runs once, then control passes to the Planner
     builder.add_edge(START, "data_agent")
@@ -27,7 +29,7 @@ def build_graph():
     builder.add_conditional_edges(
         "planner_agent",
         route_after_planner,
-        {"continue": "feature_agent", "stop": END},
+        {"continue": "feature_agent", "stop": "reporter_agent"},
     )
 
     # One experiment: features -> training -> evaluation
@@ -36,5 +38,8 @@ def build_graph():
 
     # The loop: after every evaluation the Planner decides again
     builder.add_edge("evaluator_agent", "planner_agent")
+
+    # After the loop: final evaluation on the test set, then finish
+    builder.add_edge("reporter_agent", END)
 
     return builder.compile()
