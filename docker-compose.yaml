@@ -1,21 +1,44 @@
+# =====================================================================
+# NYC Schools Pipeline: Airflow 3 (LocalExecutor) + 2 PostgreSQL DBs
+# + agent workflow (Part 2)
+# =====================================================================
+
+# ---------------------------------------------------------------------
+# Shared settings for all Airflow services (YAML anchor).
+# Defined once here and reused with "<<: *airflow-common".
+# ---------------------------------------------------------------------
 x-airflow-common: &airflow-common
-  build: .
+  build: .                                # Build the image from our Dockerfile
   image: nyc-schools-airflow:latest
   environment: &airflow-common-env
+    # Executor: LocalExecutor runs independent tasks in parallel
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
-    AIRFLOW__CORE__PARALLELISM: 8
+    AIRFLOW__CORE__PARALLELISM: 8                 # Max tasks running at once
     AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 8
+
+    # Airflow's own metadata database
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+
+    # Airflow 3: tasks talk to the API server; all services must share the same secret
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
     AIRFLOW__API_AUTH__JWT_SECRET: nyc-schools-local-dev-secret
     AIRFLOW__API__SECRET_KEY: nyc-schools-local-dev-secret
+
+    # Username/password login for the web UI (airflow / airflow)
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+
+    # Convenience settings
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"         # Hide Airflow's example DAGs
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
-    AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: 30
+    AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: 30  # Scan dags/ every 30 seconds
+
+    # Airflow Connection to our data warehouse (connection id: schools_db)
     AIRFLOW_CONN_SCHOOLS_DB: postgresql://schools:schools@schools-db:5432/schools
+
+    # Shared folder for intermediate files passed between tasks
     DATA_DIR: /opt/airflow/data
   volumes:
+    # Local folder : folder inside the container
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
     - ./plugins:/opt/airflow/plugins
@@ -23,12 +46,16 @@ x-airflow-common: &airflow-common
     - ./data:/opt/airflow/data
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-common-depends-on
+    # Do not start Airflow until both databases are ready
     postgres:
       condition: service_healthy
     schools-db:
       condition: service_healthy
 
 services:
+  # -------------------------------------------------------------------
+  # Airflow metadata database (DAG runs, task states, users)
+  # -------------------------------------------------------------------
   postgres:
     image: postgres:16
     environment:
@@ -43,6 +70,10 @@ services:
       retries: 5
     restart: always
 
+  # -------------------------------------------------------------------
+  # Data warehouse: cleaned and merged school data is loaded here.
+  # Exposed on localhost:5433 so Part 2 agents can read from it.
+  # -------------------------------------------------------------------
   schools-db:
     image: postgres:16
     environment:
@@ -59,6 +90,9 @@ services:
       retries: 5
     restart: always
 
+  # -------------------------------------------------------------------
+  # One-time setup: migrates the metadata DB and creates the admin user
+  # -------------------------------------------------------------------
   airflow-init:
     <<: *airflow-common
     entrypoint: /bin/bash
@@ -76,6 +110,9 @@ services:
       _AIRFLOW_WWW_USER_PASSWORD: airflow
     user: "0:0"
 
+  # -------------------------------------------------------------------
+  # Web UI + REST API (http://localhost:8080)
+  # -------------------------------------------------------------------
   airflow-apiserver:
     <<: *airflow-common
     command: api-server
@@ -87,6 +124,9 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  # -------------------------------------------------------------------
+  # Scheduler: decides when tasks run and executes them (LocalExecutor)
+  # -------------------------------------------------------------------
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
@@ -96,6 +136,9 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  # -------------------------------------------------------------------
+  # DAG processor: parses the Python files in dags/
+  # -------------------------------------------------------------------
   airflow-dag-processor:
     <<: *airflow-common
     command: dag-processor
@@ -105,6 +148,9 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  # -------------------------------------------------------------------
+  # Triggerer: handles deferrable tasks (standard Airflow 3 component)
+  # -------------------------------------------------------------------
   airflow-triggerer:
     <<: *airflow-common
     command: triggerer
@@ -114,6 +160,25 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+  # -------------------------------------------------------------------
+  # Part 2: agent-based ML workflow + live agent graph UI
+  # (http://localhost:8501). Reads the table loaded by the Airflow DAG.
+  # -------------------------------------------------------------------
+  agents:
+    build: ./agents
+    image: nyc-schools-agents:latest
+    environment:
+      SCHOOLS_DB_URL: postgresql://schools:schools@schools-db:5432/schools
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./agents:/app            # Code changes are picked up without rebuilding
+    depends_on:
+      schools-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+# Named volumes keep database data across container restarts
 volumes:
   airflow-metadata:
   schools-data:

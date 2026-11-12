@@ -1,0 +1,5 @@
+   langgraph>=1.0,<2.0
+   streamlit>=1.40
+   pandas>=2.2
+   scikit-learn>=1.5
+   psycopg2-binary>=2.9
