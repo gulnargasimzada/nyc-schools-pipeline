@@ -1,0 +1,14 @@
+# Airflow runtime files (re-created automatically)
+logs/
+__pycache__/
+*.pyc
+airflow.cfg
+
+# Data produced by the pipeline (re-created on every run)
+data/
+
+# Local environment and editor files
+.venv/
+.vscode/
+.DS_Store
+Thumbs.db
