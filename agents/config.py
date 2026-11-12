@@ -23,6 +23,19 @@ BASE_FEATURES = [
 ]
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
+CV_FOLDS = 5          # Folds for cross-validation inside the loop
 
 # Data contract: the agents refuse to run on a table smaller than this
 MIN_ROWS = 500
+
+# The 3rd character of a DBN identifies the borough (e.g. 01M015 -> M -> Manhattan)
+BOROUGHS = {"M": "Manhattan", "X": "Bronx", "K": "Brooklyn", "Q": "Queens", "R": "Staten Island"}
+
+# First experiment: reproduces the Part 1 baseline model
+BASELINE_PLAN = {
+    "iteration": 1,
+    "name": "baseline",
+    "feature_set": "base",
+    "model": "logistic_regression",
+    "params": {},
+}
