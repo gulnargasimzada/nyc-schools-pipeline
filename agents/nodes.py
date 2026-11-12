@@ -9,8 +9,9 @@ import time
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_split
 
-from config import (BASE_FEATURES, CV_FOLDS, MIN_ROWS, RANDOM_STATE, TABLE_NAME,
-                    TARGET_SOURCE, TEST_SIZE)
+from config import (BASE_FEATURES, BASELINE_PLAN, CV_FOLDS, FEATURE_SETS, MAX_ITERATIONS,
+                    MIN_IMPROVEMENT, MIN_ROWS, MODEL_FAMILIES, OVERFIT_LIMIT, PATIENCE,
+                    RANDOM_STATE, TABLE_NAME, TARGET_SOURCE, TEST_SIZE, TUNING_GRID)
 from db import load_table
 from ml import build_features, make_model
 from state import AgentState
@@ -64,6 +65,122 @@ def data_agent(state: AgentState) -> dict:
         "iteration": 0,
         "events": [message],
     }
+
+
+# ---------------------------------------------------------------------
+# Planner Agent: decides the next experiment or stops the loop
+# ---------------------------------------------------------------------
+def _experiment_key(model: str, feature_set: str, params: dict) -> tuple:
+    """Identify an experiment so the Planner never repeats one."""
+    return (model, feature_set, tuple(sorted(params.items())))
+
+
+def _best_and_stale(history: list) -> tuple:
+    """Return the best experiment so far and how many experiments ran since it was found.
+
+    A new result only counts as better if it beats the current best by MIN_IMPROVEMENT;
+    smaller gains are within cross-validation noise, so the earlier (simpler) model is kept.
+    """
+    best, stale = None, 0
+    for exp in history:
+        if best is None or exp["cv_accuracy"] > best["cv_accuracy"] + MIN_IMPROVEMENT:
+            best, stale = exp, 0
+        else:
+            stale += 1
+    return best, stale
+
+
+def _family_best(history: list) -> dict:
+    """Return the best experiment of every model family tried so far."""
+    best_by_model = {}
+    for exp in history:
+        current = best_by_model.get(exp["model"])
+        if current is None or exp["cv_accuracy"] > current["cv_accuracy"]:
+            best_by_model[exp["model"]] = exp
+    return best_by_model
+
+
+def _next_plan(history: list, best: dict | None) -> tuple:
+    """Pick the first untried experiment, stage by stage, built around the results so far."""
+    if not history:
+        return dict(BASELINE_PLAN), "Baseline: reproduce the Part 1 model"
+
+    tried = {_experiment_key(e["model"], e["feature_set"], e["params"]) for e in history}
+
+    candidates = []
+    # Stage 2: does a different feature set help the best model?
+    for feature_set in FEATURE_SETS:
+        candidates.append((best["model"], feature_set, best["params"],
+                           f"Feature exploration: try '{feature_set}' with {best['model']}"))
+
+    # Stage 3: does another model family do better on the best feature set?
+    for model in MODEL_FAMILIES:
+        candidates.append((model, best["feature_set"], {},
+                           f"Model exploration: try {model} on '{best['feature_set']}'"))
+
+    # Stage 4: tune every promising model family.
+    # "Promising" = its best CV accuracy is within one standard deviation of the
+    # overall best, i.e. we cannot tell it apart from the best model yet.
+    # Families that overfit most are tuned first, because the tuning variants
+    # regularize the model and help an overfitting model the most.
+    margin = best["cv_accuracy_std"]
+    promising = [
+        exp for exp in _family_best(history).values()
+        if best["cv_accuracy"] - exp["cv_accuracy"] <= margin
+    ]
+    promising.sort(key=lambda exp: exp["overfit_gap"], reverse=True)
+
+    for family in promising:
+        reason = (f"Tuning: regularize {family['model']} "
+                  f"(CV {family['cv_accuracy']:.3f}, within {margin:.3f} of the best")
+        if family["overfit_gap"] > OVERFIT_LIMIT:
+            reason += f"; overfits by {family['overfit_gap']:.3f}"
+        reason += ")"
+        for params in TUNING_GRID[family["model"]]:
+            candidates.append((family["model"], family["feature_set"], params, reason))
+
+    for model, feature_set, params, reason in candidates:
+        if _experiment_key(model, feature_set, params) not in tried:
+            name = f"{model} | {feature_set}" + (f" | {params}" if params else "")
+            plan = {"name": name, "model": model, "feature_set": feature_set, "params": params}
+            return plan, reason
+
+    return None, "all planned experiments have been tried"
+
+
+def planner_agent(state: AgentState) -> dict:
+    """Look at the results so far and either plan the next experiment or stop."""
+    history = state.get("experiments", [])
+    iteration = state.get("iteration", 0)
+    best, stale = _best_and_stale(history)
+
+    # 1. Stopping rules
+    stop_reason = None
+    if iteration >= MAX_ITERATIONS:
+        stop_reason = f"reached the limit of {MAX_ITERATIONS} experiments"
+    elif stale >= PATIENCE:
+        stop_reason = (f"no improvement of at least {MIN_IMPROVEMENT} "
+                       f"in the last {PATIENCE} experiments")
+    else:
+        plan, reason = _next_plan(history, best)
+        if plan is None:
+            stop_reason = reason
+
+    if stop_reason:
+        message = (f"Planner Agent: STOP, {stop_reason}. Best so far: '{best['name']}' "
+                   f"(CV accuracy {best['cv_accuracy']:.3f})")
+        return {"done": True, "best": best, "events": [message]}
+
+    # 2. Continue: hand the next plan to the Feature Agent
+    plan = {**plan, "iteration": iteration + 1}
+    best_text = f"current best CV {best['cv_accuracy']:.3f}" if best else "no results yet"
+    message = f"Planner Agent: experiment {iteration + 1}, {reason} ({best_text})"
+    return {"plan": plan, "iteration": iteration + 1, "done": False, "events": [message]}
+
+
+def route_after_planner(state: AgentState) -> str:
+    """Conditional edge: continue the loop or leave it."""
+    return "stop" if state.get("done") else "continue"
 
 
 # ---------------------------------------------------------------------
