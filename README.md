@@ -1,9 +1,10 @@
-# NYC Schools: Airflow Data Pipeline and Agent-Based ML Workflow
+# NYC Schools: Airflow Data Pipeline, Agent-Based ML Workflow and Adaptive Multi-Agent System
 
-An end-to-end project in two parts:
+An end-to-end project in three parts:
 
 1. **Airflow pipeline (Part 1):** ingests two related NYC Open Data datasets, cleans and merges them, loads the result into PostgreSQL, and analyzes it with a chart and a baseline model.
 2. **Agent workflow (Part 2):** a LangGraph agent graph reads the cleaned table from PostgreSQL and runs an experiment **loop** that trains, evaluates and compares models, shown live in a Streamlit UI.
+3. **Adaptive multi-agent system (Part 3, bonus):** a supervisor-based LangGraph system that selects agents, routes tasks and retries failed steps at run time, with an evaluation suite that compares it against Parts 1 and 2.
 
 **Question:** How is the economic profile of a NYC public school's student body related to its students' math results?
 
@@ -13,10 +14,15 @@ An end-to-end project in two parts:
 |---|---|
 | Airflow DAG | [`dags/nyc_schools_pipeline.py`](dags/nyc_schools_pipeline.py) |
 | Agent code | [`agents/`](agents/) (graph in [`agents/graph.py`](agents/graph.py), agents in [`agents/nodes.py`](agents/nodes.py) and [`agents/reporter.py`](agents/reporter.py)) |
-| Instructions for running both workflows | [How to run](#how-to-run) |
+| Instructions for running all workflows | [How to run](#how-to-run) |
 | Containerized setup | [`docker-compose.yaml`](docker-compose.yaml), [`Dockerfile`](Dockerfile), [`agents/Dockerfile`](agents/Dockerfile), [`.devcontainer/devcontainer.json`](.devcontainer/devcontainer.json) |
 | Screenshots: DAG execution, DAG graph, agent graph, model evaluation | [Screenshots](#screenshots) |
 | Summary of pipeline, agent design and key findings | [Part 1](#part-1-airflow-data-pipeline), [Part 2](#part-2-agent-based-ml-workflow), [Key findings](#key-findings) |
+| **Part 3:** adaptive multi-agent system and workflow graph | [`agents/adaptive/`](agents/adaptive/), [Part 3](#part-3-bonus-adaptive-multi-agent-system-with-evaluation) |
+| **Part 3:** evaluation suite | [`agents/adaptive/evaluate.py`](agents/adaptive/evaluate.py), results in [`agents/results/part3_eval.json`](agents/results/part3_eval.json) |
+| **Part 3:** dashboard | Streamlit page **Part3 Adaptive** ([`agents/pages/2_Part3_Adaptive.py`](agents/pages/2_Part3_Adaptive.py)) |
+| **Part 3:** comparison with two baselines | [Results vs. baselines](#results-vs-baselines) |
+
 
 ## Repository structure
 
@@ -27,7 +33,7 @@ nyc-schools-pipeline/
 ├── dags/
 │   ├── nyc_schools_pipeline.py  # Main pipeline DAG
 │   └── setup_check.py           # Setup test DAG
-├── agents/                      # Part 2: agent workflow
+├── agents/                      # Part 2 and Part 3: agent workflows
 │   ├── graph.py                 # LangGraph graph and loop
 │   ├── nodes.py                 # Data, Planner, Feature, Trainer, Evaluator
 │   ├── reporter.py              # Reporter Agent
@@ -37,7 +43,18 @@ nyc-schools-pipeline/
 │   ├── db.py                    # Reads the table from PostgreSQL
 │   ├── app.py                   # Live agent graph UI (Streamlit)
 │   ├── run.py                   # Run the agents from the terminal
-│   ├── results/report.json      # Final report of the last run
+│   ├── adaptive/                # Part 3: adaptive multi-agent system
+│   │   ├── scenarios.py         # 8 fault-injection scenarios
+│   │   ├── modeling.py          # Shared split, models and metrics
+│   │   ├── state.py             # Shared state of the graph
+│   │   ├── agents.py            # Supervisor + 6 agents
+│   │   ├── graph.py             # LangGraph wiring
+│   │   ├── run.py               # Run one scenario from the terminal
+│   │   ├── baselines.py         # Fixed workflow and simple loop baselines
+│   │   └── evaluate.py          # Evaluation suite
+│   ├── pages/
+│   │   └── 2_Part3_Adaptive.py  # Part 3 dashboard page
+│   ├── results/                 # report.json (Part 2), part3_eval.json (Part 3)
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── screenshots/                 # Screenshots used in this README
@@ -56,6 +73,9 @@ The `data/` folder is created by the pipeline at runtime and is not stored in th
 ```
 NYC Open Data ──► Airflow DAG ──► PostgreSQL ──► Agent workflow ──► Streamlit UI
   (2 CSVs)        (Part 1)       (schools-db)    (Part 2)          (live graph)
+                                      │
+                                      └────────► Adaptive multi-agent system + evaluation suite
+                                                 (Part 3)          (dashboard page)
 ```
 
 Airflow and the agents run in separate containers and share only the database table `school_math_demographics`.
@@ -132,10 +152,12 @@ Airflow and the agents run in separate containers and share only the database ta
 
 - **Strong negative relationship (r = -0.78)** between a school's Economic Need Index and its share of students proficient in math.
 - **Borough averages:** Queens 45%, Staten Island 44%, Manhattan 43%, Brooklyn 35%, Bronx 21%.
+
 ![Economic Need Index vs. math proficiency, and average proficiency by borough](screenshots/proficiency_analysis.png)
 
 *Figure 1. Each dot is a school: schools with a higher Economic Need Index have a lower share of students proficient in math (r = −0.78). Average proficiency by borough ranges from 21% in the Bronx to 45% in Queens.*
-- **Baseline model:** Logistic Regression predicting above-median proficiency (median 30.8%) from five features: Economic Need Index, % English Language Learners, % students with disabilities, % female, total enrollment. Poverty (duplicates the Economic Need Index), race/ethnicity shares (proxies for economic need, fairness concerns) and test-derived columns (data leakage) were excluded on purpose.
+
+**Baseline model:** Logistic Regression predicting above-median proficiency (median 30.8%) from five features: Economic Need Index, % English Language Learners, % students with disabilities, % female, total enrollment. Poverty (duplicates the Economic Need Index), race/ethnicity shares (proxies for economic need, fairness concerns) and test-derived columns (data leakage) were excluded on purpose.
 
 | Metric | Value |
 |---|---|
@@ -224,15 +246,103 @@ These numbers are identical to the Part 1 baseline, which confirms that the agen
 
 ---
 
+## Part 3 (Bonus): Adaptive Multi-Agent System with Evaluation
+
+### Overview
+
+A supervisor-based LangGraph system (`agents/adaptive/`). Instead of a fixed loop, a **supervisor** reads the shared state after every step and selects the next agent. The workflow therefore adapts at run time: it repairs bad data, retries failed steps, skips models that keep crashing, re-trains overfitting models with regularization, and stops safely when the data cannot be trusted. All agents are rule-based (no LLM), so every run is reproducible.
+
+### Workflow graph
+
+```
+                 START
+                   |
+                   v
+   +---------> SUPERVISOR ---------> reporter -> END
+   |          (selects the next agent)
+   |      +------+------+------+------+
+   |      v      v      v      v      v
+   |   data_  data_  planner trainer critic
+   |   quality repair
+   +------+------+------+------+------+   (every agent reports back)
+```
+
+| Agent | Responsibility | Adaptive behavior |
+|---|---|---|
+| **Supervisor** | Routes work based on the state | Selects agents, retries failed steps, skips crashing models, aborts on blocking issues |
+| **Data Quality** | Checks row count, duplicates, missing values, ranges, leakage | Unrepairable issue -> abort; repairable -> Data Repair |
+| **Data Repair** | Deduplicates, imputes, rescales 0-100 values, removes leaky features | Data is re-checked after every repair |
+| **Planner** | Picks the next experiment (Logistic Regression, Random Forest, Gradient Boosting) | Excludes skipped model families |
+| **Trainer** | Trains and cross-validates; catches errors | Errors are routed back to the supervisor for a retry |
+| **Critic** | Reviews intermediate results | Overfitting -> re-queues the model with regularization; CV > 0.95 -> rejects (possible leakage) |
+| **Reporter** | Evaluates the chosen model once on the test set | Writes a safe "aborted" report when no model can be trusted |
+
+**Example (`model_crash` scenario):** Random Forest fails -> the supervisor retries it -> it fails again -> the supervisor skips it and routes to the planner -> Gradient Boosting overfits (gap 0.086) -> the critic re-queues it with regularization (gap 0.050) -> the reporter keeps Logistic Regression: **test accuracy 0.810, ROC-AUC 0.888**, identical to Parts 1 and 2.
+
+### Evaluation suite
+
+The suite ([`agents/adaptive/evaluate.py`](agents/adaptive/evaluate.py)) injects one realistic problem per test case into the clean table. Each test case specifies the input, expected behavior, scoring criteria and threshold. Score = share of checks passed; a test passes at score >= 1.0.
+
+| Test | Input | Expected behavior | Scoring criteria |
+|---|---|---|---|
+| T1 | Clean table | Completes without repairs | completed, accuracy >= 0.78, no unnecessary repair |
+| T2 | 5% of Economic Need Index missing | Imputes and completes | completed, repair performed, accuracy >= 0.75 |
+| T3 | 3% of `pct_ell` on a 0-100 scale | Rescales and completes | completed, repair performed, accuracy >= 0.75 |
+| T4 | 25 duplicate schools | Deduplicates and completes | completed, repair performed, accuracy >= 0.75 |
+| T5 | Leaky feature requested (`mean_scale_score`) | Removes it, trains without it | completed, feature excluded, accuracy < 0.95 |
+| T6 | First training call crashes | Retries and completes | completed, retry performed, accuracy >= 0.78 |
+| T7 | Random Forest always crashes | Skips it, completes with another model | completed, accuracy >= 0.78 |
+| T8 | Only 100 rows | Stops safely with a reason | aborted without a model, reason recorded |
+
+Intermediate quality is measured by the data checks, repairs and CV / overfitting-gap reviews; final quality by test accuracy; coordination by agent calls, retries, recovery rate and run time.
+
+### Results vs. baselines
+
+All three systems receive exactly the same perturbed data:
+- **Fixed workflow:** the Part 1 Airflow logic, with predefined steps, fail-fast checks, one model, and retries that repeat the same step.
+- **Simple agentic loop:** the **real Part 2 LangGraph workflow** (`agents/graph.py`), run unchanged. During the evaluation only its data source (`load_table`) and model factory (`make_model`) are patched, so that the same scenarios and faults can be injected.
+
+| Test | Fixed workflow | Simple agentic loop | Adaptive multi-agent |
+|---|---|---|---|
+| T1 clean | PASS | PASS | PASS |
+| T2 missing values | FAIL | FAIL | PASS |
+| T3 unit error | FAIL | FAIL (0.67) | PASS |
+| T4 duplicates | FAIL | FAIL | PASS |
+| T5 leaky feature | FAIL (0.67) | PASS | PASS |
+| T6 transient failure | PASS | FAIL | PASS |
+| T7 model crash | PASS | FAIL | PASS |
+| T8 too few rows | FAIL | PASS | PASS |
+| **Passed** | **3/8** | **3/8** | **8/8** |
+
+| Coordination metric | Fixed workflow | Simple agentic loop | Adaptive multi-agent |
+|---|---|---|---|
+| Mean score | 0.46 | 0.46 | 1.00 |
+| Recovery rate (6 fault scenarios that should complete) | 50% | 33% | 100% |
+| Avg. steps / agent calls per run | 1.8 | 13.4 | 33.5 |
+| Total evaluation time | 0.5 s | 45.6 s | 138.6 s |
+
+Two results show that **a successful run is not the same as a trustworthy result**:
+- **T3:** the Part 2 data contract only checks the range of the *target*, so the simple loop finishes but silently trains on 32 corrupted `pct_ell` values (score 0.67).
+- **T5:** the fixed workflow finishes with realistic accuracy but silently trains on the leaky feature (score 0.67). The simple loop passes only because its feature sets are fixed in `config.py`.
+
+### Summary
+
+- **Fixed workflow:** fast and predictable, and Airflow retries handle transient errors. But every data problem stops the pipeline, and it cannot judge its own output: it trains on a leaky feature and on only 100 rows without complaint.
+- **Simple agentic loop:** explores many models and its data contract refuses missing values, duplicates and too little data. But it cannot repair data, it misses corrupted feature values, and one crashing model stops the whole run.
+- **Adaptive multi-agent system:** passes all 8 tests and recovers from every injected fault. The cost is coordination overhead: about 2.5x more agent calls than the simple loop and the longest run time, because every step goes through the supervisor and overfitting models are trained twice.
+- On clean data all three systems reach the same accuracy. The value of the adaptive system is **robustness**, not a better model.
+
+
 ## Key findings
 
 - **Economic need is the dominant signal.** Schools serving a higher share of students facing economic hardship have, on average, lower math proficiency (r = -0.78). The Economic Need Index is by far the strongest predictor in every model.
 - **A simple model is enough.** Seven experiments across three model families and two feature sets all converged to **0.83-0.84 CV accuracy**. Regularization cut overfitting in Random Forest from 0.167 to 0.059 and improved Gradient Boosting by 1.1 points, but no model beat the baseline by more than the noise threshold. The limit comes from the data, not from the model.
 - **Borough adds little.** Adding borough raised CV accuracy by only 0.005, within noise, likely because the Economic Need Index already captures most of the differences between boroughs.
 - **The final model predicts above- or below-median math results for 81% of unseen schools**, 31 points better than guessing the majority class.
+- **Robustness comes from coordination, not from a better model.** All three systems reach the same accuracy on clean data, but only the adaptive multi-agent system survives all injected faults (8/8 vs. 3/8 for both baselines), at the cost of more steps and a longer run time.
 - **These are school-level associations.** They do not describe individual students and do not show that economic need causes lower results. Factors that are not in the data, such as school resources and teacher experience, may explain the remaining differences.
 
-**Limitations:** one school year; school-level data only; the median threshold is a modeling choice; censored values were set to 95%; charter schools are not included.
+**Limitations:** one school year; school-level data only; the median threshold is a modeling choice; censored values were set to 95%; charter schools are not included. In Part 3, the Part 2 baseline is the real workflow, but the Part 1 baseline re-implements the Airflow DAG's checks and retries in Python (same split, models and metrics) instead of running the live DAG; the agents are rule-based, and the evaluation covers eight scenarios.
 
 ---
 
@@ -245,10 +355,19 @@ docker compose build
 docker compose up airflow-init
 docker compose up -d
 ```
+
 > **Note:** The `data/` folder is not committed. The DAG downloads both datasets from NYC Open Data on every run and recreates all intermediate files.
 
 1. **Airflow pipeline (run first):** open http://localhost:8080 (`airflow` / `airflow`), unpause and trigger `nyc_schools_pipeline`. It loads the table `school_math_demographics` that the agents need.
 2. **Agent workflow:** open http://localhost:8501 and click **Run agent workflow**, or run `docker compose exec agents python run.py`. The final report is saved to `agents/results/report.json`.
+3. **Adaptive multi-agent system:** open the **Part3 Adaptive** page at http://localhost:8501 to run a scenario live and view the evaluation results, or use the terminal:
+
+```bash
+docker compose exec agents python -m adaptive.run model_crash   # one scenario
+docker compose exec agents python -m adaptive.evaluate          # full evaluation suite
+```
+
+The evaluation results are saved to `agents/results/part3_eval.json`.
 
 ---
 
@@ -272,3 +391,11 @@ docker compose up -d
 
 **Final model evaluation on the held-out test set**
 ![Agent results](screenshots/agent_results.png)
+
+### Part 3: Adaptive multi-agent system
+
+**Live adaptive workflow graph (`model_crash` scenario: retry, skip, regularization)**
+![Part 3 live agent graph](screenshots/part3_agent_graph.png)
+
+**Evaluation suite: adaptive system vs. the two baselines**
+![Part 3 evaluation results](screenshots/part3_evaluation.png)
