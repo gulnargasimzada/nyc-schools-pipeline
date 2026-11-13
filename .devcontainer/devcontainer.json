@@ -1,0 +1,30 @@
+{
+  // Display name shown in VS Code
+  "name": "NYC Schools Airflow + Agents",
+
+  // Reuse the existing Docker Compose setup instead of defining a new environment
+  "dockerComposeFile": ["../docker-compose.yaml"],
+
+  // Attach VS Code to the Airflow scheduler container (Airflow + all pipeline packages)
+  "service": "airflow-scheduler",
+
+  // Folder opened inside the container (dags/, data/, logs/ are mounted here)
+  "workspaceFolder": "/opt/airflow",
+
+  // Start the agent service too, so the agent UI is available while developing
+  "runServices": ["airflow-scheduler", "airflow-apiserver", "airflow-dag-processor",
+                  "airflow-triggerer", "postgres", "schools-db", "agents"],
+
+  // Stop all containers when the VS Code window is closed
+  "shutdownAction": "stopCompose",
+
+  // Airflow UI, schools database and the live agent graph
+  "forwardPorts": [8080, 5433, 8501],
+
+  // VS Code extensions installed inside the container
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"]
+    }
+  }
+}
