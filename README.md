@@ -132,6 +132,9 @@ Airflow and the agents run in separate containers and share only the database ta
 
 - **Strong negative relationship (r = -0.78)** between a school's Economic Need Index and its share of students proficient in math.
 - **Borough averages:** Queens 45%, Staten Island 44%, Manhattan 43%, Brooklyn 35%, Bronx 21%.
+![Economic Need Index vs. math proficiency, and average proficiency by borough](screenshots/proficiency_analysis.png)
+
+*Figure 1. Each dot is a school: schools with a higher Economic Need Index have a lower share of students proficient in math (r = −0.78). Average proficiency by borough ranges from 21% in the Bronx to 45% in Queens.*
 - **Baseline model:** Logistic Regression predicting above-median proficiency (median 30.8%) from five features: Economic Need Index, % English Language Learners, % students with disabilities, % female, total enrollment. Poverty (duplicates the Economic Need Index), race/ethnicity shares (proxies for economic need, fairness concerns) and test-derived columns (data leakage) were excluded on purpose.
 
 | Metric | Value |
@@ -242,6 +245,7 @@ docker compose build
 docker compose up airflow-init
 docker compose up -d
 ```
+> **Note:** The `data/` folder is not committed. The DAG downloads both datasets from NYC Open Data on every run and recreates all intermediate files.
 
 1. **Airflow pipeline (run first):** open http://localhost:8080 (`airflow` / `airflow`), unpause and trigger `nyc_schools_pipeline`. It loads the table `school_math_demographics` that the agents need.
 2. **Agent workflow:** open http://localhost:8501 and click **Run agent workflow**, or run `docker compose exec agents python run.py`. The final report is saved to `agents/results/report.json`.
